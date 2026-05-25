@@ -113,6 +113,7 @@ class SecretService:
             )
 
         actor_uuid = uuid.UUID(actor_id)
+        now = datetime.now(timezone.utc)
 
         # Create the Secret record (no value stored here)
         secret = Secret(
@@ -123,6 +124,8 @@ class SecretService:
             description=payload.description,
             created_by_id=actor_uuid,
             current_version=0,
+            created_at=now,
+            updated_at=now,
         )
         await self._secret_repo.create(secret)
 

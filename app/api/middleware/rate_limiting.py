@@ -36,6 +36,7 @@ IP extraction:
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import redis.asyncio as aioredis
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -56,6 +57,14 @@ def _get_client_ip(request: Request) -> str:
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:  # type: ignore[override]
+        # OPTIONS preflight must reach CORSMiddleware unblocked
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        # Internal health / readiness probes don't count against user limits
+        if request.url.path in ("/health", "/ready"):
+            return await call_next(request)
+
         settings = get_settings()
         redis_client: aioredis.Redis = request.app.state.redis
         ip = _get_client_ip(request)
@@ -71,7 +80,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             scope = "write"
             limit = settings.rate_limit_write_per_minute
             window = 60
-            # Prefer user-based limiting for authenticated requests
             identifier = f"ip:{ip}"
         else:
             scope = "api"
@@ -86,7 +94,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         )
         if global_count > settings.rate_limit_global_per_minute:
             return self._rate_limited_response(
-                settings.rate_limit_global_per_minute, 0, window
+                request, settings.rate_limit_global_per_minute, 0, window, settings
             )
 
         # Scope-specific limit
@@ -97,7 +105,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         reset_at = int(time.time()) + window
 
         if count > limit:
-            return self._rate_limited_response(limit, 0, window)
+            return self._rate_limited_response(request, limit, 0, window, settings)
 
         response = await call_next(request)
         response.headers["X-RateLimit-Limit"] = str(limit)
@@ -112,15 +120,33 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         limit: int,
         window: int,
     ) -> int:
-        """Increment counter and set TTL on first request. Returns current count."""
-        pipe = redis_client.pipeline()
-        pipe.incr(key)
-        pipe.expire(key, window)
-        results = await pipe.execute()
-        return results[0]
+        """Increment counter; set TTL only on the first request in a window.
+
+        Calling EXPIRE unconditionally resets the window on every request,
+        so counters grow forever. Setting TTL only when count==1 ensures the
+        window expires exactly `window` seconds after the first request.
+        """
+        count = await redis_client.incr(key)
+        if count == 1:
+            await redis_client.expire(key, window)
+        return count
 
     @staticmethod
-    def _rate_limited_response(limit: int, remaining: int, retry_after: int) -> JSONResponse:
+    def _rate_limited_response(
+        request: Request,
+        limit: int,
+        remaining: int,
+        retry_after: int,
+        settings: Any,
+    ) -> JSONResponse:
+        # 429 responses bypass CORSMiddleware; add CORS headers here so the
+        # browser can read the error instead of reporting "Network Error".
+        origin = request.headers.get("Origin", "")
+        cors_headers: dict[str, str] = {}
+        if origin and origin in settings.cors_origins_list:
+            cors_headers["Access-Control-Allow-Origin"] = origin
+            cors_headers["Access-Control-Allow-Credentials"] = "true"
+
         return JSONResponse(
             status_code=429,
             content={
@@ -131,5 +157,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 "X-RateLimit-Limit": str(limit),
                 "X-RateLimit-Remaining": "0",
                 "Retry-After": str(retry_after),
+                **cors_headers,
             },
         )

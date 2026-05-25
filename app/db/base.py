@@ -30,22 +30,30 @@ class Base(DeclarativeBase):
 
 class TimestampMixin:
     """
-    Adds `created_at` / `updated_at` columns with automatic server-side timestamps.
+    Adds `created_at` / `updated_at` columns managed by Python-side defaults.
 
-    Using `server_default=func.now()` means the DB sets the value, ensuring
-    correct timestamps even when rows are inserted via raw SQL (migrations, seeds).
-    `onupdate` fires on every SQLAlchemy UPDATE to keep updated_at current.
+    Python lambdas (not server-side SQL functions) are used for default/onupdate
+    so SQLAlchemy always knows the value before INSERT/UPDATE.  Server-side
+    server_default is kept only as a fallback for raw-SQL inserts that bypass
+    SQLAlchemy (e.g. migrations, seed scripts).
+
+    Using server-side onupdate=func.now() causes SQLAlchemy to expire the column
+    after every UPDATE (because the DB-generated value is unknown in Python), which
+    in an async context triggers a MissingGreenlet error when the attribute is
+    accessed later.  Python-side onupdate avoids that entirely.
     """
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
         server_default=func.now(),
         nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
         server_default=func.now(),
-        onupdate=func.now(),
+        onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
 

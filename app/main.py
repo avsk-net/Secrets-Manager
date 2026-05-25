@@ -148,15 +148,20 @@ def create_app() -> FastAPI:
             request_id=request_id,
             path=request.url.path,
             exc_type=type(exc).__name__,
+            exc_message=str(exc),
             # exc_info=True logs the stack trace to stderr — NOT in response
             exc_info=True,
         )
+        content: dict[str, Any] = {
+            "detail": "An internal error occurred",
+            "request_id": request_id,
+        }
+        if settings.app_env != "production":
+            content["exc_type"] = type(exc).__name__
+            content["exc_message"] = str(exc)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "detail": "An internal error occurred",
-                "request_id": request_id,
-            },
+            content=content,
         )
 
     # ── Routers ───────────────────────────────────────────────────────────────

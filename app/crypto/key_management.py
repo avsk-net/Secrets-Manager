@@ -94,6 +94,7 @@ class KeyManagementService:
             dek = b"\x00" * len(dek)  # noqa: F841 (intentional overwrite)
             del dek
 
+        now = datetime.now(timezone.utc)
         record = KeyMetadata(
             id=uuid.uuid4(),
             key_id=key_id,
@@ -101,7 +102,8 @@ class KeyManagementService:
             encrypted_key=wrapped,
             mek_version=1,
             is_active=True,
-            created_at=datetime.now(timezone.utc),
+            created_at=now,
+            updated_at=now,
         )
         self._db.add(record)
         await self._db.flush()  # Get the ID without committing
